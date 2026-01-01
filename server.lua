@@ -510,3 +510,155 @@ QBCore.Commands.Add('givecash', 'Give Cash', { { name = 'id', help = 'Player ID'
     TriggerClientEvent('QBCore:Notify', src, string.format(Lang:t('success.give'), amount), 'success')
     TriggerClientEvent('QBCore:Notify', target.PlayerData.source, string.format(Lang:t('success.receive'), amount), 'success')
 end)
+
+-- Door Locking System
+
+local doorStates = {}
+
+local function getCurrentGameHour()
+    local timestamp = os.time()
+    local systemHours = tonumber(os.date('%H', timestamp))
+
+    -- Use QBCore's time sync if available
+    if GetResourceState('qb-weathersync') == 'started' then
+        local success, hour, minute = pcall(function()
+            return exports['qb-weathersync']:getTime()
+        end)
+        if success and hour then
+            print(string.format('[qb-banking] DEBUG: Using qb-weathersync time: %d:%02d', hour, minute or 0))
+            return hour
+        else
+            print('[qb-banking] DEBUG: Failed to get qb-weathersync time, using system time')
+        end
+    else
+        print('[qb-banking] DEBUG: qb-weathersync not started, using system time')
+    end
+
+    -- Fallback to system time
+    print(string.format('[qb-banking] DEBUG: Using system time: %d:00', systemHours))
+    return systemHours
+end
+
+local function shouldDoorsBeLockedAtTime(hour)
+    local openHour = Config.doorHours.open
+    local closeHour = Config.doorHours.close
+
+    local shouldLock = false
+    if closeHour > openHour then
+        -- Normal case: open 9, close 17 (9 AM - 5 PM)
+        shouldLock = hour < openHour or hour >= closeHour
+        print(string.format('[qb-banking] DEBUG: Normal hours logic - Hour: %d, Open: %d, Close: %d, Should Lock: %s',
+            hour, openHour, closeHour, tostring(shouldLock)))
+    else
+        -- Overnight case: open 22, close 6 (10 PM - 6 AM)
+        shouldLock = hour >= closeHour and hour < openHour
+        print(string.format('[qb-banking] DEBUG: Overnight hours logic - Hour: %d, Open: %d, Close: %d, Should Lock: %s',
+            hour, openHour, closeHour, tostring(shouldLock)))
+    end
+
+    return shouldLock
+end
+
+local function updateDoorLocksViaQBDoorlock(doorID, locked)
+    if GetResourceState('qb-doorlock') ~= 'started' then
+        print('[qb-banking] ERROR: qb-doorlock is not running!')
+        return false
+    end
+
+    -- Use qb-doorlock export to update door state
+    local success = exports['qb-doorlock']:SetDoorLocked(doorID, locked)
+
+    if success then
+        print(string.format('[qb-banking] Successfully updated door "%s" to locked: %s', doorID, tostring(locked)))
+    else
+        print(string.format('[qb-banking] FAILED to update door "%s" - Check if door ID exists in qb-doorlock config', doorID))
+    end
+
+    return success
+end
+
+local function updateDoorStates()
+    local currentHour = getCurrentGameHour()
+    local shouldBeLocked = shouldDoorsBeLockedAtTime(currentHour)
+
+    print(string.format('[qb-banking] Door Check - Current Hour: %d, Should Be Locked: %s', currentHour, tostring(shouldBeLocked)))
+
+    for doorID, _ in pairs(Config.lockedDoors) do
+        local wasLocked = doorStates[doorID]
+
+        if wasLocked == nil or shouldBeLocked ~= wasLocked then
+            doorStates[doorID] = shouldBeLocked
+            print(string.format('[qb-banking] Door state changed for door ID "%s" - Locked: %s', doorID, tostring(shouldBeLocked)))
+            updateDoorLocksViaQBDoorlock(doorID, shouldBeLocked)
+        end
+    end
+end
+
+-- Commands for testing
+
+QBCore.Commands.Add('bankdoorstatus', 'Check bank door locking status', {}, false, function(source)
+    local src = source
+    local currentHour = getCurrentGameHour()
+    local shouldBeLocked = shouldDoorsBeLockedAtTime(currentHour)
+
+    TriggerClientEvent('QBCore:Notify', src, string.format('Current Time: %d:00 | Doors Should Be: %s', currentHour, shouldBeLocked and 'LOCKED' or 'UNLOCKED'), 'primary', 5000)
+    TriggerClientEvent('QBCore:Notify', src, string.format('Bank Hours: %d:00 AM - %d:00 PM', Config.doorHours.open, Config.doorHours.close), 'primary', 5000)
+
+    print(string.format('[qb-banking] Status Check - Hour: %d, Should Be Locked: %s, Open: %d, Close: %d',
+        currentHour, tostring(shouldBeLocked), Config.doorHours.open, Config.doorHours.close))
+end, 'admin')
+
+QBCore.Commands.Add('bankdoortoggle', 'Manually toggle bank door lock (testing)', {{name = 'doorid', help = 'Door ID (bank_door_1, bank_door_2, etc)'}}, true, function(source, args)
+    local src = source
+    local doorID = args[1]
+
+    if not Config.lockedDoors[doorID] then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid door ID. Available: bank_door_1, bank_door_2', 'error')
+        return
+    end
+
+    -- Get current state and toggle it
+    local currentLocked = doorStates[doorID]
+    local newLocked = not currentLocked
+
+    doorStates[doorID] = newLocked
+    updateDoorLocksViaQBDoorlock(doorID, newLocked)
+
+    TriggerClientEvent('QBCore:Notify', src, string.format('Door %s is now %s', doorID, newLocked and 'LOCKED' or 'UNLOCKED'), 'success')
+end, 'admin')
+
+-- Callback to check if doors are currently locked
+QBCore.Functions.CreateCallback('qb-banking:server:areDoorsLocked', function(source, cb)
+    local currentHour = getCurrentGameHour()
+    local shouldBeLocked = shouldDoorsBeLockedAtTime(currentHour)
+    cb(shouldBeLocked)
+end)
+
+CreateThread(function()
+    -- Wait for qb-doorlock to be ready
+    while GetResourceState('qb-doorlock') ~= 'started' do
+        Wait(1000)
+    end
+
+    Wait(2000) -- Additional wait for qb-doorlock to fully initialize
+    print('[qb-banking] Initializing door locking system...')
+
+    -- Force initial update to set door states
+    local currentHour = getCurrentGameHour()
+    local shouldBeLocked = shouldDoorsBeLockedAtTime(currentHour)
+
+    print(string.format('[qb-banking] Current game time: %d:00, Bank hours: %d:00 - %d:00',
+        currentHour, Config.doorHours.open, Config.doorHours.close))
+
+    for doorID, _ in pairs(Config.lockedDoors) do
+        doorStates[doorID] = shouldBeLocked
+        updateDoorLocksViaQBDoorlock(doorID, shouldBeLocked)
+        print(string.format('[qb-banking] Initial door state for "%s" - Locked: %s', doorID, tostring(shouldBeLocked)))
+    end
+
+    -- Continue with regular updates
+    while true do
+        updateDoorStates()
+        Wait(60000) -- Check every minute
+    end
+end)
