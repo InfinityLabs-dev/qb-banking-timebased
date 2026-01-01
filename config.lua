@@ -19,5 +19,28 @@ Config = {
         vector3(1175.64, 2707.71, 38.09),
         vector3(247.65, 223.87, 106.29),
         vector3(-111.98, 6470.56, 31.63)
-    }
+    },
+
+    doorlock = 'qb-doorlock',
+
+    doorHours = {
+        open = 9,  -- 9 AM
+        close = 17 -- 5 PM
+    },
+
+    -- Door IDs must match entries in qb-doorlock/configs/*.lua
+    -- Each door needs ID, coordinates for proximity detection, and notification distance
+    lockedDoors = {
+        ['bank_door_1'] = {
+            coords = vector3(232.61, 214.16, 106.4),
+            notifyDistance = 2.0  -- Distance to show notification
+        },
+        ['bank_door_2'] = {
+            coords = vector3(231.51, 216.52, 106.4),
+            notifyDistance = 2.0
+        }
+    },
+
+    notice = 'Banks are open from 9 AM to 5 PM. Please plan your transactions accordingly.',
+    notifyCooldown = 30000, -- Cooldown between notifications in milliseconds (30 seconds)
 }
