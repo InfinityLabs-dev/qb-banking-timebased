@@ -219,3 +219,39 @@ if not Config.useTarget then
         end)
     end)
 end
+
+-- Bank Door Closure Notification System
+
+local lastNotifyTime = {}
+
+CreateThread(function()
+    while true do
+        local playerPed = PlayerPedId()
+        local playerCoords = GetEntityCoords(playerPed)
+        local sleep = 1000
+
+        for doorID, doorData in pairs(Config.lockedDoors) do
+            local distance = #(playerCoords - doorData.coords)
+
+            if distance < doorData.notifyDistance then
+                sleep = 500
+
+                -- Check if we should show notification (cooldown check)
+                local currentTime = GetGameTimer()
+                local lastNotify = lastNotifyTime[doorID] or 0
+
+                if currentTime - lastNotify > Config.notifyCooldown then
+                    -- Ask server if doors are locked
+                    QBCore.Functions.TriggerCallback('qb-banking:server:areDoorsLocked', function(areLocked)
+                        if areLocked then
+                            QBCore.Functions.Notify(Config.notice, 'primary', 5000)
+                            lastNotifyTime[doorID] = GetGameTimer()
+                        end
+                    end)
+                end
+            end
+        end
+
+        Wait(sleep)
+    end
+end)
